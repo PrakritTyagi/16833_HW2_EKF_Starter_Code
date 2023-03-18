@@ -163,7 +163,25 @@ def update(X_pre, P_pre, measure, measure_cov, k):
     \return X Updated X state of shape (3 + 2k, 1).
     \return P Updated P covariance of shape (3 + 2k, 3 + 2k).
     '''
+    x = X_pre[0,0]
+    y = X_pre[1,0]
+    H = np.zeros((3+2*k,3+2*k))
+    for i in range(0,k):
+        Lx = X_pre[3+2*i,0]
+        Ly = X_pre[3+2*i+1,0]
+        dist = (Lx-x)**2 + (Ly-y)**2
+        delx = Lx-x
+        dely = Ly-y
+        Hp = np.array([dely/dist, delx/dist, -1],
+                      [-delx/np.sqrt(dist), -dely/np.sqrt(dist), 0])
+        Hl = np.array([-dely/dist, delx/dist],
+                      [delx/np.sqrt(dist), dely/np.sqrt(dist)])
+        
+        H[2*i:2*i+2,0:3] = Hp
+        H[2*i:2*i+2,3+2*i:3+2*i+2] = Hl
 
+    
+    
     return X_pre, P_pre
 
 

@@ -101,12 +101,21 @@ def init_landmarks(init_measure, init_measure_cov, init_pose, init_pose_cov):
     \return landmarks Numpy array of shape (2k, 1) for the state.
     \return landmarks_cov Numpy array of shape (2k, 2k) for the uncertainty.
     '''
-
+    x,y,theta = init_pose
     k = init_measure.shape[0] // 2
 
     landmark = np.zeros((2 * k, 1))
     landmark_cov = np.zeros((2 * k, 2 * k))
-
+    for i in range(0,k):
+        betai = init_measure[2*i,0]
+        li = init_measure[2*i+1,0]
+        landmark[2*i,0] = x + li*np.cos(theta + betai)
+        landmark[2*i+1,0] = y + li*np.sin(theta + betai)
+        Jacp = np.array([[1, 0, -li*np.sin(theta + betai)],
+                        [0, 1, li*np.cos(theta + betai)]],dtype=object)
+        Jacz = np.array([[-li*np.sin(theta + betai), np.cos(theta + betai)],
+                         [li*np.cos(theta + betai), np.sin(theta + betai)]],dtype=object).reshape(2,2)
+        landmark_cov[2*i:2*i+2,2*i:2*i+2] = np.matmul(np.matmul(Jacp,init_pose_cov),Jacp.T) + np.matmul(np.matmul(Jacz,init_measure_cov),Jacz.T)
     return k, landmark, landmark_cov
 
 
@@ -122,8 +131,24 @@ def predict(X, P, control, control_cov, k):
     \return X_pre Predicted X state of shape (3 + 2k, 1).
     \return P_pre Predicted P covariance of shape (3 + 2k, 3 + 2k).
     '''
+    theta = X[2,0]
+    d = control[0,0]
 
-    return X, P
+    A_dynamics = np.array([[1, 0, -d*np.sin(theta)],
+                           [0, 1, d*np.cos(theta)],
+                           [0, 0, 1]])
+    B_dynamics = np.array([[np.cos(theta), 0],
+                          [np.sin(theta), 0],
+                          [0, 1]])
+    A = np.block([[A_dynamics , np.zeros((3, 2 * k))],
+                  [np.zeros((2 * k, 3)), np.ones((2 * k, 2 * k))]])
+    R = np.block([[control_cov , np.zeros((3, 2 * k))],
+                  [np.zeros((2 * k, 3)), np.zeros((2 * k, 2 * k))]])
+    B = np.vstack((B_dynamics,np.zeros((2 * k, 2))))
+    X_pre = A @ X + B @ control
+    P_pre = A @ P @ A.T + R
+    print(X_pre.shape)
+    return X_pre, P_pre
 
 
 def update(X_pre, P_pre, measure, measure_cov, k):
@@ -175,7 +200,7 @@ def main():
     sig_r2 = sig_r**2
 
     # Open data file and read the initial measurements
-    data_file = open("../data/data.txt")
+    data_file = open("./data/data.txt")
     line = data_file.readline()
     fields = re.split('[\t ]', line)[:-1]
     arr = np.array([float(field) for field in fields])
@@ -219,7 +244,7 @@ def main():
             ##########
             # TODO: predict step in EKF SLAM
             X_pre, P_pre = predict(X, P, control, control_cov, k)
-
+            print("hellos")
             draw_traj_and_pred(X_pre, P_pre)
 
         # Measurement

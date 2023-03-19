@@ -86,6 +86,11 @@ def warp2pi(angle_rad):
     \param angle_rad Input angle in radius
     \return angle_rad_warped Warped angle to [-\pi, \pi].
     """
+    while angle_rad > np.pi:
+        angle_rad -= 2*np.pi
+
+    while angle_rad < -np.pi:
+        angle_rad += 2*np.pi
     return angle_rad
 
 
@@ -101,7 +106,9 @@ def init_landmarks(init_measure, init_measure_cov, init_pose, init_pose_cov):
     \return landmarks Numpy array of shape (2k, 1) for the state.
     \return landmarks_cov Numpy array of shape (2k, 2k) for the uncertainty.
     '''
-    x,y,theta = init_pose
+    x = init_pose[0][0]
+    y = init_pose[1][0]
+    theta = init_pose[2][0]
     k = init_measure.shape[0] // 2
 
     landmark = np.zeros((2 * k, 1))
@@ -109,13 +116,16 @@ def init_landmarks(init_measure, init_measure_cov, init_pose, init_pose_cov):
     for i in range(0,k):
         betai = init_measure[2*i,0]
         li = init_measure[2*i+1,0]
-        landmark[2*i,0] = x + li*np.cos(theta + betai)
-        landmark[2*i+1,0] = y + li*np.sin(theta + betai)
-        Jacp = np.array([[1, 0, -li*np.sin(theta + betai)],
-                        [0, 1, li*np.cos(theta + betai)]],dtype=object)
-        Jacz = np.array([[-li*np.sin(theta + betai), np.cos(theta + betai)],
-                         [li*np.cos(theta + betai), np.sin(theta + betai)]],dtype=object).reshape(2,2)
-        landmark_cov[2*i:2*i+2,2*i:2*i+2] = np.matmul(np.matmul(Jacp,init_pose_cov),Jacp.T) + np.matmul(np.matmul(Jacz,init_measure_cov),Jacz.T)
+        ang = warp2pi(theta + betai)
+        landmark[2*i,0] = x + li*np.cos(ang)
+        landmark[2*i+1,0] = y + li*np.sin(ang)
+        Jacp = np.array([[1, 0, -li*np.sin(ang)],
+                        [0, 1, li*np.cos(ang)]],dtype=object)
+        
+        Jacz = np.array([[-li*np.sin(ang), np.cos(ang)],
+                         [li*np.cos(ang), np.sin(ang)]],dtype=object).reshape(2,2)
+        landmark_cov[2*i:2*i+2,2*i:2*i+2] = Jacp @ init_pose_cov @ Jacp.T + Jacz @ init_measure_cov @ Jacz.T
+
     return k, landmark, landmark_cov
 
 
@@ -133,21 +143,31 @@ def predict(X, P, control, control_cov, k):
     '''
     theta = X[2,0]
     d = control[0,0]
-
+    alpha = control[1,0]
     A_dynamics = np.array([[1, 0, -d*np.sin(theta)],
                            [0, 1, d*np.cos(theta)],
                            [0, 0, 1]])
-    B_dynamics = np.array([[np.cos(theta), 0],
-                          [np.sin(theta), 0],
-                          [0, 1]])
+    B_dynamics = np.array([[np.cos(theta), -np.sin(theta), 0],
+                            [np.sin(theta), np.cos(theta), 0],
+                            [0, 0, 1]])
+    
+    # Predicting X_pre
+    delX = np.zeros((3+ 2*k,1))
+    delX[0,0] = d*np.cos(theta)
+    delX[1,0] = d*np.sin(theta)
+    delX[2,0] = alpha   
+    X_pre = X + delX
+
+    # Predicting P_pre
     A = np.block([[A_dynamics , np.zeros((3, 2 * k))],
-                  [np.zeros((2 * k, 3)), np.ones((2 * k, 2 * k))]])
+                  [np.zeros((2 * k, 3)), np.eye(2 * k)]])
+    
     R = np.block([[control_cov , np.zeros((3, 2 * k))],
                   [np.zeros((2 * k, 3)), np.zeros((2 * k, 2 * k))]])
-    B = np.vstack((B_dynamics,np.zeros((2 * k, 2))))
-    X_pre = A @ X + B @ control
+
+    # temp = A @ P @ A.T
     P_pre = A @ P @ A.T + R
-    print(X_pre.shape)
+
     return X_pre, P_pre
 
 
@@ -165,24 +185,35 @@ def update(X_pre, P_pre, measure, measure_cov, k):
     '''
     x = X_pre[0,0]
     y = X_pre[1,0]
-    H = np.zeros((3+2*k,3+2*k))
+    theta = X_pre[2,0]
+    H = np.zeros((2*k,3+2*k))
+    Q = np.zeros((2*k,2*k))
+    H_control = np.zeros((2*k, 1))
     for i in range(0,k):
         Lx = X_pre[3+2*i,0]
         Ly = X_pre[3+2*i+1,0]
         dist = (Lx-x)**2 + (Ly-y)**2
         delx = Lx-x
         dely = Ly-y
-        Hp = np.array([dely/dist, delx/dist, -1],
-                      [-delx/np.sqrt(dist), -dely/np.sqrt(dist), 0])
-        Hl = np.array([-dely/dist, delx/dist],
-                      [delx/np.sqrt(dist), dely/np.sqrt(dist)])
+        Hp = np.array([[dely/dist, -delx/dist, -1],
+                      [-delx/np.sqrt(dist), -dely/np.sqrt(dist), 0]])
+        Hl = np.array([[-dely/dist, delx/dist],
+                      [delx/np.sqrt(dist), dely/np.sqrt(dist)]])
         
         H[2*i:2*i+2,0:3] = Hp
         H[2*i:2*i+2,3+2*i:3+2*i+2] = Hl
 
+        Q[2*i:2*i+2,2*i:2*i+2] = measure_cov
+
+        H_control[2*i,:] = warp2pi(np.arctan2(dely,delx) - theta)
+        H_control[2*i+1,:] = np.sqrt(dist)
     
-    
-    return X_pre, P_pre
+    KalmanGain = P_pre @ H.T @ np.linalg.inv(H @ P_pre @ H.T + Q)
+
+    X = X_pre + KalmanGain @ (measure - H_control)
+
+    P = P_pre - KalmanGain @ H @ P_pre
+    return X, P
 
 
 def evaluate(X, P, k):
@@ -195,7 +226,24 @@ def evaluate(X, P, k):
 
     \return None
     '''
+    l_estimated = X[3:,0]
     l_true = np.array([3, 6, 3, 12, 7, 8, 7, 14, 11, 6, 11, 12], dtype=float)
+    # Euclidean Distance
+    delx = l_estimated[::2] - l_true[::2] 
+    dely = l_estimated[1::2] - l_true[1::2]
+    E_dist = np.sqrt(delx**2 + dely**2)
+    print("Euclidean distance : {}".format(E_dist))
+
+    # Mahalanobis Distance
+    delxy = np.vstack((delx,dely))
+    maha_distances=[]
+    for i in range(k):
+        dist= delxy[:,i]
+        sigma = P[2*i+3:2*i+5,2*i+3:2*i+5]
+        distance = np.sqrt((dist.T@ np.linalg.inv(sigma)@ dist))
+        maha_distances.append(distance)
+
+    print("Final Mahalanobis distances : {}".format(maha_distances))
     plt.scatter(l_true[0::2], l_true[1::2])
     plt.draw()
     plt.waitforbuttonpress(0)
@@ -203,12 +251,17 @@ def evaluate(X, P, k):
 
 def main():
     # TEST: Setup uncertainty parameters
-    sig_x = 0.25;
-    sig_y = 0.1;
-    sig_alpha = 0.1;
-    sig_beta = 0.01;
-    sig_r = 0.08;
-
+    sig_x = 0.25
+    sig_y = 0.1
+    sig_alpha = 0.1
+    sig_beta = 0.01
+    sig_r = 0.08
+    # Result 
+    # sig_x = 0.25
+    # sig_y = 0.1
+    # sig_alpha = 0.1
+    # sig_beta = 0.01/10
+    # sig_r = 0.08
 
     # Generate variance from standard deviation
     sig_x2 = sig_x**2
@@ -262,7 +315,7 @@ def main():
             ##########
             # TODO: predict step in EKF SLAM
             X_pre, P_pre = predict(X, P, control, control_cov, k)
-            print("hellos")
+
             draw_traj_and_pred(X_pre, P_pre)
 
         # Measurement
@@ -280,6 +333,8 @@ def main():
 
     # EVAL: Plot ground truth landmarks and analyze distances
     evaluate(X, P, k)
+    # print(P)
+
 
 
 if __name__ == "__main__":
